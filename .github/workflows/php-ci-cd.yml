@@ -62,9 +62,8 @@ jobs:
             composer-
       
       # 4. Install Composer dependencies
-      - name: Install dependencies
-        run: |
-          composer install --prefer-dist --no-progress --no-suggest
+- name: Install dependencies
+  run: composer update --prefer-dist --no-progress --no-suggest
       
       # 5. Run tests
       - name: Run tests
