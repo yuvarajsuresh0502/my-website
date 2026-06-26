@@ -3,5 +3,7 @@
     "description": "PHP Application",
     "type": "project",
     "require": {},
-    "require-dev": {}
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    }
 }
