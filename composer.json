@@ -1,9 +1,8 @@
 {
-    "name": "yuvaraj0502/my-website",
-    "description": "A simple PHP project",
-    "type": "project",
-    "require": {}
-     "require-dev": {
-        "phpunit/phpunit": "^9.0 || ^10.0 || ^11.0"
-}
+    "name": "your/project",
+    "description": "Your project description",
+    "require": {},     // ← This comma is the problem!
+    "require-dev": {
+        // ...
+    }
 }
