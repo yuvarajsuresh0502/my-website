@@ -1,7 +1,7 @@
 {
-    "name": "your/project",
-    "description": "Your project description",
-    "require": {} 
-    "require-dev": 
-    }
+    "name": "your-app/php-application",
+    "description": "PHP Application",
+    "type": "project",
+    "require": {},
+    "require-dev": {}
 }
