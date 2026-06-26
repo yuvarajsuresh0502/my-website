@@ -1,7 +1,7 @@
 {
     "name": "your/project",
     "description": "Your project description",
-    "require": {},     // ← This comma is the problem!
+    "require": {} 
     "require-dev": {
         // ...
     }
