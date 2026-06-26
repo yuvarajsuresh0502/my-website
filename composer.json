@@ -2,7 +2,6 @@
     "name": "your/project",
     "description": "Your project description",
     "require": {} 
-    "require-dev": {
-        // ...
+    "require-dev": 
     }
 }
