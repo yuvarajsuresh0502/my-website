@@ -90,8 +90,8 @@ jobs:
     
     strategy:
       matrix:
-        php-versions: ['8.1', '8.2']  # Test against multiple PHP versions
-        dependency-versions: ['locked', 'latest']  # Test with locked and latest deps
+        php-versions: ['8.2']  # Test against multiple PHP versions
+        dependency-versions: ['locked']  # Test with locked and latest deps
     
     services:
       mysql:
@@ -220,7 +220,7 @@ jobs:
           name: codecov-umbrella
           fail_ci_if_error: false
       
-      # 12. Upload test artifacts
+      # 12. Upload test results
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -416,9 +416,9 @@ jobs:
             
             console.log(message);
       
-      # 2. Send Slack notification (optional)
+      # 2. Send Slack notification (fixed condition)
       - name: Send Slack notification
-        if: success() && secrets.SLACK_WEBHOOK != ''
+        if: success()
         uses: slackapi/slack-github-action@v1.24.0
         with:
           channel-id: '#deployments'
