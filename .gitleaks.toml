@@ -1,0 +1,33 @@
+# .gitleaks.toml
+title = "Gitleaks Configuration"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "custom-api-key"
+description = "Custom API Key Pattern"
+regex = '''[a-zA-Z0-9_\-]{32,64}'''
+tags = ["api", "key"]
+
+[[rules]]
+id = "jwt-token"
+description = "JWT Token"
+regex = '''eyJ[a-zA-Z0-9]{10,}\.eyJ[a-zA-Z0-9]{10,}\.[a-zA-Z0-9_-]{10,}'''
+tags = ["jwt", "token"]
+
+[allowlist]
+description = "Allowed file paths"
+paths = [
+  '''\.git/''',
+  '''\.env\.example''',
+  '''.*\.test\.php$''',
+  '''vendor/''',
+]
+
+[allowlist.regexes]
+description = "Allowed regex patterns"
+regexes = [
+  '''[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}''',  # UUID
+  '''generated|example|test''',
+]
