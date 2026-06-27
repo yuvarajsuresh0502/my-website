@@ -1,133 +1,293 @@
-# ============================================
-# PHP CI/CD PIPELINE - GitHub Actions
-# ============================================
+# ============================================================
+# COMPLETE PHP CI/CD PIPELINE with GITLEAKS SECURITY SCANNING
+# ============================================================
 # 🔧 WHAT THIS DOES:
-#   - Runs on every push to 'main' and 'develop'
-#   - Installs PHP with extensions
-#   - Runs Composer to install dependencies
-#   - Runs PHPUnit/Pest tests
-#   - Deploys to server when pushing to 'main' or 'develop'
+#   - 🔒 Gitleaks: Scans for hardcoded secrets/tokens in code
+#   - 🏗️ Build: Installs dependencies and builds the application
+#   - 🧪 Test: Runs PHPUnit/Pest tests with coverage
+#   - 🚀 Deploy: Deploys to server on successful test
 #
-# ✏️ WHAT YOU NEED TO CHANGE:
-#   1. PHP_VERSION: Change to your PHP version (7.4, 8.0, 8.1, 8.2, 8.3)
-#   2. EXTENSIONS: Add/remove PHP extensions your app needs
-#   3. TEST_CMD: Change to your actual test command
-#   4. DEPLOY_PATH: Change to your server's deployment path
-#   5. DEPLOY_SCRIPT: Change to your actual deployment commands
-#   6. SECRETS: Add the following secrets in your repo settings:
-#      - SSH_PRIVATE_KEY
-#      - SERVER_USER
-#      - SERVER_IP
-#      - SERVER_PORT (optional, default: 22)
-# ============================================
+# 📋 TRIGGERS:
+#   - Push to main, develop, and feature branches
+#   - Pull requests to main branch
+#   - Manual trigger via workflow_dispatch
+# ============================================================
 
-name: PHP CI/CD Pipeline
+name: PHP CI/CD Pipeline with Security Scanning
 
 on:
   push:
-    branches: [ "main", "develop" ]
+    branches: [ "main", "develop", "feature/*" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:  # Manual trigger
+
+env:
+  PHP_VERSION: '8.2'
+  EXTENSIONS: mbstring, xml, ctype, json, tokenizer, bcmath, pdo_mysql, pdo_pgsql, intl, zip, curl, gd
 
 jobs:
-  # ---------- JOB 1: TESTING ----------
-  test:
+  # ==========================================================
+  # JOB 1: SECURITY SCANNING (Gitleaks)
+  # ==========================================================
+  security-scan:
+    name: 🔒 Security Scan (Gitleaks)
     runs-on: ubuntu-latest
+    
+    steps:
+      # 1. Checkout code with full history
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better scanning
+      
+      # 2. Run Gitleaks scan
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config: |
+            [rules]
+              [rules.secrets]
+                description = "Generic Secret"
+                regex = '''(?i)(?:key|token|secret|password|auth|credential)[^a-zA-Z0-9]*[=:][^a-zA-Z0-9]*([a-zA-Z0-9_\-\.\/]{8,})'''
+                tags = ["secret", "generic"]
+            
+            [rules.aws]
+              description = "AWS Access Key"
+              regex = '''(AKIA[0-9A-Z]{16})'''
+              tags = ["aws", "secret"]
+            
+            [rules.private-key]
+              description = "Private Key"
+              regex = '''-----BEGIN (?:RSA|DSA|EC|OPENSSH) PRIVATE KEY-----'''
+              tags = ["key", "private"]
+      
+      # 3. Upload scan results (optional)
+      - name: Upload Gitleaks results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-results
+          path: gitleaks-report.json
+      
+      # 4. Send notification if secrets found
+      - name: Send alert if secrets found
+        if: failure()
+        run: |
+          echo "🔴 SECURITY ALERT: Gitleaks found potential secrets in the code!"
+          echo "Please check the scan results and remove any exposed secrets."
+          exit 1
+
+  # ==========================================================
+  # JOB 2: BUILD & TEST
+  # ==========================================================
+  build-and-test:
+    name: 🏗️ Build & Test
+    runs-on: ubuntu-latest
+    needs: security-scan  # Runs only if security scan passes
     
     strategy:
       matrix:
-        php-versions: ['8.2']  # Change to your version: '7.4', '8.0', '8.1', '8.2', '8.3'
+        php-versions: ['8.1', '8.2']  # Test against multiple PHP versions
+        dependency-versions: ['locked', 'latest']  # Test with locked and latest deps
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: test_db
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: --health-cmd="redis-cli ping" --health-interval=10s --health-timeout=5s --health-retries=3
     
     steps:
       # 1. Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
       
-      # 2. Setup PHP with extensions
+      # 2. Setup PHP
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-versions }}
-          extensions: mbstring, xml, ctype, json, tokenizer, bcmath, pdo_mysql, pdo_pgsql, intl, zip, curl
+          extensions: ${{ env.EXTENSIONS }}
           coverage: xdebug
-          tools: composer, phpunit
+          tools: composer, phpunit, php-cs-fixer
       
-      # 3. Cache Composer dependencies
-      - name: Cache Composer dependencies
+      # 3. Validate composer.json
+      - name: Validate composer.json
+        run: composer validate --strict
+      
+      # 4. Cache Composer dependencies
+      - name: Cache dependencies
         uses: actions/cache@v3
         with:
           path: |
             vendor/
             ~/.cache/composer
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          key: ${{ runner.os }}-php${{ matrix.php-versions }}-${{ matrix.dependency-versions }}-composer-${{ hashFiles('composer.lock') }}
           restore-keys: |
+            ${{ runner.os }}-php${{ matrix.php-versions }}-${{ matrix.dependency-versions }}-composer-
+            ${{ runner.os }}-php${{ matrix.php-versions }}-composer-
             ${{ runner.os }}-composer-
       
-      # 4. Install Composer dependencies
+      # 5. Install dependencies
       - name: Install dependencies
         run: |
-          composer install --prefer-dist --no-progress --no-suggest
-          # If you have a composer.lock file, use 'composer install'
-          # If you want to update dependencies, use 'composer update'
-      
-      # 5. Create .env file for testing
-      - name: Create .env file
-        run: |
-          cp .env.example .env || echo "No .env.example found"
-          php artisan key:generate || echo "Not a Laravel project"
-      
-     name: Git Leaks Scan
-
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-        
-    - name: Run Gitleaks
-      uses: gitleaks/gitleaks-action@v2
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} # Optional for private repos
-      
-      # 7. Run PHP Code Sniffer (Optional - for code style)
-      - name: Run PHPCS
-        run: |
-          if [ -f "./vendor/bin/phpcs" ]; then
-            ./vendor/bin/phpcs --standard=PSR12 app/ src/ --ignore=vendor/ || true
+          if [ "${{ matrix.dependency-versions }}" == "latest" ]; then
+            composer update --prefer-dist --no-progress
           else
-            echo "PHPCS not installed, skipping..."
+            composer install --prefer-dist --no-progress --no-suggest
           fi
-        continue-on-error: true
       
-      # 8. Run PHPStan (Optional - static analysis)
+      # 6. Create environment file
+      - name: Setup environment
+        run: |
+          if [ -f ".env.example" ]; then
+            cp .env.example .env
+          else
+            echo "APP_ENV=testing" > .env
+            echo "APP_DEBUG=true" >> .env
+            echo "APP_URL=http://localhost" >> .env
+            echo "DB_CONNECTION=mysql" >> .env
+            echo "DB_HOST=127.0.0.1" >> .env
+            echo "DB_PORT=3306" >> .env
+            echo "DB_DATABASE=test_db" >> .env
+            echo "DB_USERNAME=root" >> .env
+            echo "DB_PASSWORD=root" >> .env
+            echo "REDIS_HOST=127.0.0.1" >> .env
+            echo "REDIS_PORT=6379" >> .env
+          fi
+          
+          # Generate application key for Laravel
+          if [ -f "artisan" ]; then
+            php artisan key:generate
+          fi
+      
+      # 7. Run database migrations
+      - name: Run migrations
+        if: hashFiles('database/migrations') != ''
+        run: |
+          if [ -f "artisan" ]; then
+            php artisan migrate --force
+          fi
+      
+      # 8. Run static analysis (PHPStan)
       - name: Run PHPStan
         run: |
           if [ -f "./vendor/bin/phpstan" ]; then
-            ./vendor/bin/phpstan analyse app/ src/ --level=5 || true
+            ./vendor/bin/phpstan analyse app/ src/ --level=5 --no-progress || true
           else
             echo "PHPStan not installed, skipping..."
           fi
-        continue-on-error: true
-  
-  # ---------- JOB 2: DEPLOYMENT ----------
+      
+      # 9. Run code style check
+      - name: Run PHPCS
+        run: |
+          if [ -f "./vendor/bin/phpcs" ]; then
+            ./vendor/bin/phpcs --standard=PSR12 app/ src/ --ignore=vendor/ --report=summary || true
+          else
+            echo "PHPCS not installed, skipping..."
+          fi
+      
+      # 10. Run tests with coverage
+      - name: Run PHPUnit tests
+        run: |
+          if [ -f "./vendor/bin/phpunit" ]; then
+            ./vendor/bin/phpunit --testdox --coverage-clover=coverage.xml --coverage-html=coverage-report
+          elif [ -f "./vendor/bin/pest" ]; then
+            ./vendor/bin/pest --testdox --coverage-clover=coverage.xml --coverage-html=coverage-report
+          else
+            echo "No test runner found"
+            exit 1
+          fi
+      
+      # 11. Upload test coverage
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+      
+      # 12. Upload test artifacts
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-php${{ matrix.php-versions }}-${{ matrix.dependency-versions }}
+          path: |
+            coverage-report/
+            tests/_output/
+            *.xml
+      
+      # 13. Build production assets (for frontend)
+      - name: Build assets
+        run: |
+          if [ -f "package.json" ]; then
+            npm ci --no-audit --no-fund
+            npm run build || echo "No build script found"
+          fi
+      
+      # 14. Create build artifact
+      - name: Archive build
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifact
+          path: |
+            ./
+            !vendor/
+            !node_modules/
+            !tests/
+            !*.log
+            !.env
+          retention-days: 7
+
+  # ==========================================================
+  # JOB 3: DEPLOYMENT
+  # ==========================================================
   deploy:
+    name: 🚀 Deploy to Server
     runs-on: ubuntu-latest
-    needs: test
-    # Only deploy on specific branches
+    needs: build-and-test  # Runs only if build and test pass
+    # Deploy only on specific branches
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     
+    strategy:
+      matrix:
+        environment: ['staging', 'production']
+        include:
+          - environment: staging
+            branch: develop
+            deploy_path: /var/www/staging/your-app
+          - environment: production
+            branch: main
+            deploy_path: /var/www/production/your-app
+    
+    environment:
+      name: ${{ matrix.environment }}
+      url: https://${{ matrix.environment }}-your-app.com
+    
     steps:
-      - name: Deploy to Server via SSH
+      # 1. Download build artifact
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          path: ./build
+      
+      # 2. Deploy to server
+      - name: Deploy to ${{ matrix.environment }}
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_IP }}
@@ -135,21 +295,34 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.SERVER_PORT || 22 }}
           script: |
-            # Deployment script
-            set -e  # Exit on error
+            set -e  # Exit on any error
             
-            # CHANGE THESE VARIABLES FOR YOUR PROJECT
-            DEPLOY_PATH="/var/www/your-app"
-            PHP_VERSION="8.2"
+            # Configuration
+            DEPLOY_PATH="${{ matrix.deploy_path }}"
+            PHP_VERSION="${{ env.PHP_VERSION }}"
+            ENVIRONMENT="${{ matrix.environment }}"
+            BRANCH="${{ github.ref_name }}"
+            TIMESTAMP=$(date +%Y%m%d_%H%M%S)
             
-            echo "🚀 Starting deployment to $DEPLOY_PATH"
+            echo "🚀 Starting deployment to $ENVIRONMENT environment..."
+            echo "📦 Branch: $BRANCH"
+            echo "📦 Target: $DEPLOY_PATH"
+            
+            # Create backup directory
+            BACKUP_DIR="${DEPLOY_PATH}_backup_${TIMESTAMP}"
+            echo "📦 Creating backup to $BACKUP_DIR..."
+            if [ -d "$DEPLOY_PATH" ]; then
+              cp -r $DEPLOY_PATH $BACKUP_DIR
+            fi
             
             # Navigate to deployment directory
             cd $DEPLOY_PATH || { echo "❌ Directory not found: $DEPLOY_PATH"; exit 1; }
             
             # Pull latest code
-            echo "📦 Pulling latest code from ${{ github.ref_name }} branch..."
-            git pull origin ${{ github.ref_name }}
+            echo "📦 Pulling latest code from $BRANCH branch..."
+            git fetch --all
+            git checkout $BRANCH
+            git pull origin $BRANCH
             
             # Install/update dependencies
             echo "📦 Installing Composer dependencies..."
@@ -158,35 +331,97 @@ jobs:
             # Run database migrations
             if [ -f "artisan" ]; then
               echo "📦 Running Laravel migrations..."
-              php artisan migrate --force
+              php artisan migrate --force --env=$ENVIRONMENT
               
-              echo "📦 Clearing and caching configuration..."
+              echo "📦 Optimizing application..."
+              php artisan optimize:clear
               php artisan config:cache
               php artisan route:cache
               php artisan view:cache
               
-              echo "📦 Running queue restart..."
-              php artisan queue:restart
+              if [ "$ENVIRONMENT" == "production" ]; then
+                echo "📦 Running production optimizations..."
+                php artisan optimize
+              fi
+            fi
+            
+            # Build frontend assets
+            if [ -f "package.json" ]; then
+              echo "📦 Building frontend assets..."
+              npm ci --no-audit --no-fund --production
+              npm run build || echo "No build script found"
             fi
             
             # Set permissions
             echo "📦 Setting file permissions..."
             sudo chown -R www-data:www-data .
             sudo chmod -R 755 storage bootstrap/cache
+            sudo chmod -R 644 public/ 2>/dev/null || true
+            
+            # Create .env file for environment
+            if [ -f ".env.$ENVIRONMENT" ]; then
+              echo "📦 Using .env.$ENVIRONMENT file..."
+              cp .env.$ENVIRONMENT .env
+            fi
             
             # Restart PHP-FPM
             echo "📦 Restarting PHP-FPM..."
             sudo systemctl restart php$PHP_VERSION-fpm || sudo service php$PHP_VERSION-fpm restart
             
-            # Restart Nginx (optional)
-            # sudo systemctl restart nginx
-            
-            # Clear OPcache if needed
+            # Clear OPcache
             echo "📦 Clearing OPcache..."
             sudo systemctl reload php$PHP_VERSION-fpm
             
-            echo "✅ Deployment complete to ${{ github.ref_name }} branch!"
+            # Run post-deployment scripts
+            if [ -f "deploy/post-deploy.sh" ]; then
+              echo "📦 Running post-deployment script..."
+              bash deploy/post-deploy.sh $ENVIRONMENT
+            fi
+            
+            # Clean up old backups (keep last 5)
+            echo "📦 Cleaning up old backups..."
+            cd /var/www/
+            ls -dt ${DEPLOY_PATH}_backup_* 2>/dev/null | tail -n +6 | xargs rm -rf 2>/dev/null || true
+            
+            echo "✅ Deployment complete to $ENVIRONMENT environment!"
             
             # Show current version
             echo "📋 Current commit:"
             git log -1 --pretty=format:"%h - %s (%an, %ar)"
+            
+            # Health check
+            echo "📋 Running health check..."
+            curl -f http://localhost/health || echo "⚠️ Health check failed"
+
+  # ==========================================================
+  # JOB 4: POST-DEPLOYMENT (Optional)
+  # ==========================================================
+  post-deployment:
+    name: 📊 Post-Deployment Tasks
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: always()
+    
+    steps:
+      # 1. Send deployment notification
+      - name: Send notification
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const status = '${{ needs.deploy.result }}';
+            const emoji = status === 'success' ? '✅' : '❌';
+            const message = `${emoji} Deployment ${
+              status === 'success' ? 'successful' : 'failed'
+            } for ${process.env.GITHUB_REF_NAME}`;
+            
+            console.log(message);
+      
+      # 2. Send Slack notification (optional)
+      - name: Send Slack notification
+        if: success() && secrets.SLACK_WEBHOOK != ''
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          channel-id: '#deployments'
+          slack-message: "✅ Deployment successful! Branch: ${{ github.ref_name }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
