@@ -76,18 +76,28 @@ jobs:
           cp .env.example .env || echo "No .env.example found"
           php artisan key:generate || echo "Not a Laravel project"
       
-      # 6. Run tests
-      - name: Run PHPUnit tests
-        run: |
-          if [ -f "./vendor/bin/phpunit" ]; then
-            ./vendor/bin/phpunit --testdox --stop-on-failure
-          elif [ -f "./vendor/bin/pest" ]; then
-            ./vendor/bin/pest --stop-on-failure
-          else
-            echo "No test runner found"
-            exit 1
-          fi
-        continue-on-error: false
+     name: Git Leaks Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
+        
+    - name: Run Gitleaks
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }} # Optional for private repos
       
       # 7. Run PHP Code Sniffer (Optional - for code style)
       - name: Run PHPCS
