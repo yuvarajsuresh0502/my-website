@@ -2,11 +2,11 @@
 # PHP CI/CD PIPELINE - GitHub Actions
 # ============================================
 # 🔧 WHAT THIS DOES:
-#   - Runs on every push to 'main' and on pull requests
+#   - Runs on every push to 'main' and 'develop'
 #   - Installs PHP with extensions
 #   - Runs Composer to install dependencies
 #   - Runs PHPUnit/Pest tests
-#   - Deploys to server when pushing to 'main'
+#   - Deploys to server when pushing to 'main' or 'develop'
 #
 # ✏️ WHAT YOU NEED TO CHANGE:
 #   1. PHP_VERSION: Change to your PHP version (7.4, 8.0, 8.1, 8.2, 8.3)
@@ -18,6 +18,7 @@
 #      - SSH_PRIVATE_KEY
 #      - SERVER_USER
 #      - SERVER_IP
+#      - SERVER_PORT (optional, default: 22)
 # ============================================
 
 name: PHP CI/CD Pipeline
@@ -33,7 +34,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
     
-    # 👇 CHANGE THIS: Your PHP version and extensions
     strategy:
       matrix:
         php-versions: ['8.2']  # Change to your version: '7.4', '8.0', '8.1', '8.2', '8.3'
@@ -48,43 +48,72 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php-versions }}
-          # 👇 CHANGE THIS: Add/remove extensions your app needs
-          extensions: mbstring, xml, ctype, json, tokenizer, bcmath, pdo_mysql, pdo_pgsql, intl
+          extensions: mbstring, xml, ctype, json, tokenizer, bcmath, pdo_mysql, pdo_pgsql, intl, zip, curl
           coverage: xdebug
+          tools: composer, phpunit
       
       # 3. Cache Composer dependencies
       - name: Cache Composer dependencies
         uses: actions/cache@v3
         with:
-          path: vendor/
-          key: composer-${{ hashFiles('composer.lock') }}
+          path: |
+            vendor/
+            ~/.cache/composer
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
           restore-keys: |
-            composer-
+            ${{ runner.os }}-composer-
       
       # 4. Install Composer dependencies
-- name: Install dependencies
-  run: composer update --prefer-dist --no-progress --no-suggest
-      
-      # 5. Run tests
-      - name: Run tests
-        # 👇 CHANGE THIS: Your actual test command
+      - name: Install dependencies
         run: |
-          ./vendor/bin/phpunit --testdox
-          # OR if using Pest:
-          # ./vendor/bin/pest
+          composer install --prefer-dist --no-progress --no-suggest
+          # If you have a composer.lock file, use 'composer install'
+          # If you want to update dependencies, use 'composer update'
       
-      # 6. Run PHP Code Sniffer (Optional - for code style)
+      # 5. Create .env file for testing
+      - name: Create .env file
+        run: |
+          cp .env.example .env || echo "No .env.example found"
+          php artisan key:generate || echo "Not a Laravel project"
+      
+      # 6. Run tests
+      - name: Run PHPUnit tests
+        run: |
+          if [ -f "./vendor/bin/phpunit" ]; then
+            ./vendor/bin/phpunit --testdox --stop-on-failure
+          elif [ -f "./vendor/bin/pest" ]; then
+            ./vendor/bin/pest --stop-on-failure
+          else
+            echo "No test runner found"
+            exit 1
+          fi
+        continue-on-error: false
+      
+      # 7. Run PHP Code Sniffer (Optional - for code style)
       - name: Run PHPCS
-        # 👇 REMOVE THIS BLOCK if you don't use PHPCS
         run: |
-          ./vendor/bin/phpcs --standard=PSR12 app/
-        continue-on-error: true  # Don't fail the build for style issues
+          if [ -f "./vendor/bin/phpcs" ]; then
+            ./vendor/bin/phpcs --standard=PSR12 app/ src/ --ignore=vendor/ || true
+          else
+            echo "PHPCS not installed, skipping..."
+          fi
+        continue-on-error: true
+      
+      # 8. Run PHPStan (Optional - static analysis)
+      - name: Run PHPStan
+        run: |
+          if [ -f "./vendor/bin/phpstan" ]; then
+            ./vendor/bin/phpstan analyse app/ src/ --level=5 || true
+          else
+            echo "PHPStan not installed, skipping..."
+          fi
+        continue-on-error: true
   
   # ---------- JOB 2: DEPLOYMENT ----------
   deploy:
     runs-on: ubuntu-latest
-    needs: test  # Only runs if 'test' job succeeds
-    # 👇 CHANGE THIS: Only deploy on specific branches
+    needs: test
+    # Only deploy on specific branches
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     
     steps:
@@ -94,27 +123,60 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
           script: |
-            # 👇 CHANGE THIS: Your deployment path
-            cd /var/www/your-app
+            # Deployment script
+            set -e  # Exit on error
             
-            # 👇 CHANGE THIS: Your deployment commands
-            echo "📦 Pulling latest code..."
+            # CHANGE THESE VARIABLES FOR YOUR PROJECT
+            DEPLOY_PATH="/var/www/your-app"
+            PHP_VERSION="8.2"
+            
+            echo "🚀 Starting deployment to $DEPLOY_PATH"
+            
+            # Navigate to deployment directory
+            cd $DEPLOY_PATH || { echo "❌ Directory not found: $DEPLOY_PATH"; exit 1; }
+            
+            # Pull latest code
+            echo "📦 Pulling latest code from ${{ github.ref_name }} branch..."
             git pull origin ${{ github.ref_name }}
             
-            echo "📦 Installing dependencies..."
-            composer install --no-dev --optimize-autoloader
+            # Install/update dependencies
+            echo "📦 Installing Composer dependencies..."
+            composer install --no-dev --optimize-autoloader --prefer-dist
             
-            echo "📦 Running migrations..."
-            php artisan migrate --force  # For Laravel
+            # Run database migrations
+            if [ -f "artisan" ]; then
+              echo "📦 Running Laravel migrations..."
+              php artisan migrate --force
+              
+              echo "📦 Clearing and caching configuration..."
+              php artisan config:cache
+              php artisan route:cache
+              php artisan view:cache
+              
+              echo "📦 Running queue restart..."
+              php artisan queue:restart
+            fi
             
-            echo "📦 Clearing cache..."
-            php artisan cache:clear
-            php artisan config:clear
-            php artisan view:clear
-            php artisan route:clear
+            # Set permissions
+            echo "📦 Setting file permissions..."
+            sudo chown -R www-data:www-data .
+            sudo chmod -R 755 storage bootstrap/cache
             
+            # Restart PHP-FPM
             echo "📦 Restarting PHP-FPM..."
-            sudo systemctl restart php8.2-fpm  # Change to your PHP version
+            sudo systemctl restart php$PHP_VERSION-fpm || sudo service php$PHP_VERSION-fpm restart
             
-            echo "✅ Deployment complete!"
+            # Restart Nginx (optional)
+            # sudo systemctl restart nginx
+            
+            # Clear OPcache if needed
+            echo "📦 Clearing OPcache..."
+            sudo systemctl reload php$PHP_VERSION-fpm
+            
+            echo "✅ Deployment complete to ${{ github.ref_name }} branch!"
+            
+            # Show current version
+            echo "📋 Current commit:"
+            git log -1 --pretty=format:"%h - %s (%an, %ar)"
